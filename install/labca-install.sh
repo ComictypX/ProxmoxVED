@@ -33,7 +33,7 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/labca-gui --init -config /etc/labca/config.json -port 3000
+ExecStart=/usr/bin/labca-gui -config /etc/labca/config.json -port 3000
 Restart=on-failure
 RestartSec=5
 
