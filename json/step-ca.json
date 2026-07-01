@@ -1,0 +1,45 @@
+{
+  "name": "step-ca",
+  "slug": "step-ca",
+  "categories": [
+    6
+  ],
+  "date_created": "2026-07-01",
+  "type": "ct",
+  "updateable": true,
+  "privileged": false,
+  "has_arm": false,
+  "interface_port": 443,
+  "documentation": "https://smallstep.com/docs/step-ca/",
+  "website": "https://smallstep.com/certificates/",
+  "logo": "https://cdn.jsdelivr.net/gh/selfhst/icons@main/webp/step-ca.webp",
+  "description": "step-ca is a private certificate authority and ACME server from Smallstep.",
+  "install_methods": [
+    {
+      "type": "default",
+      "script": "ct/step-ca.sh",
+      "config_path": "/etc/step-ca/config/ca.json",
+      "resources": {
+        "cpu": 1,
+        "ram": 1024,
+        "hdd": 4,
+        "os": "Debian",
+        "version": "13"
+      }
+    }
+  ],
+  "default_credentials": {
+    "username": null,
+    "password": null
+  },
+  "notes": [
+    {
+      "text": "The installer can use either the default BadgerDB backend or a MariaDB backend.",
+      "type": "info"
+    },
+    {
+      "text": "LabCA standalone requires step-ca to be installed with the MariaDB backend.",
+      "type": "warning"
+    }
+  ]
+}

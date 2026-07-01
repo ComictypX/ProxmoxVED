@@ -6586,6 +6586,433 @@ setup_mariadb_db() {
 }
 
 # ------------------------------------------------------------------------------
+# Returns the configured step-ca database backend.
+#
+# Usage:
+#   mode=$(step_ca_db_mode)
+# ------------------------------------------------------------------------------
+
+step_ca_db_mode() {
+  local config="${1:-/etc/step-ca/config/ca.json}"
+
+  [[ -f "$config" ]] || return 1
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.db.type // empty' "$config" 2>/dev/null
+  else
+    sed -n 's/.*"type"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$config" | head -n1
+  fi
+}
+
+_step_ca_configure_environment() {
+  export STEPPATH="${STEP_CA_PATH:-/etc/step-ca}"
+  export STEPHOME="${STEP_HOME:-/etc/step}"
+
+  mkdir -p "$STEPHOME"
+  grep -qxF "export STEPPATH=${STEPPATH}" /etc/profile 2>/dev/null || echo "export STEPPATH=${STEPPATH}" >>/etc/profile
+  grep -qxF "export STEPHOME=${STEPHOME}" /etc/profile 2>/dev/null || echo "export STEPHOME=${STEPHOME}" >>/etc/profile
+}
+
+_step_ca_install_packages() {
+  setup_deb822_repo \
+    "smallstep" \
+    "https://packages.smallstep.com/keys/apt/repo-signing-key.gpg" \
+    "https://packages.smallstep.com/stable/debian" \
+    "debs" \
+    "main"
+
+  msg_info "Installing step-ca and step-cli"
+  $STD apt install -y step-ca step-cli
+
+  if command -v step-cli >/dev/null 2>&1; then
+    rm -f /usr/bin/step
+    cp -f "$(command -v step-cli)" /usr/bin/step
+  fi
+  msg_ok "Installed step-ca and step-cli"
+}
+
+_step_ca_update_packages() {
+  setup_deb822_repo \
+    "smallstep" \
+    "https://packages.smallstep.com/keys/apt/repo-signing-key.gpg" \
+    "https://packages.smallstep.com/stable/debian" \
+    "debs" \
+    "main"
+
+  msg_info "Updating step-ca and step-cli"
+  $STD apt install --only-upgrade -y step-ca step-cli || $STD apt install -y step-ca step-cli
+
+  if command -v step-cli >/dev/null 2>&1; then
+    rm -f /usr/bin/step
+    cp -f "$(command -v step-cli)" /usr/bin/step
+  fi
+  msg_ok "Updated step-ca and step-cli"
+}
+
+_step_ca_write_service() {
+  local step_ca_db_mode="$1"
+  local step_ca_after="network-online.target"
+  local step_ca_wants="network-online.target"
+  local step_ca_requires=""
+  local step_ca_read_write="ReadWritePaths=/etc/step-ca/db"
+
+  if [[ "$step_ca_db_mode" == "mysql" ]]; then
+    step_ca_after="network-online.target mariadb.service"
+    step_ca_wants="network-online.target"
+    step_ca_requires="Requires=mariadb.service"
+    step_ca_read_write=""
+  fi
+
+  msg_info "Creating step-ca Service"
+  cat <<EOF >/etc/systemd/system/step-ca.service
+[Unit]
+Description=step-ca service
+Documentation=https://smallstep.com/docs/step-ca
+After=${step_ca_after}
+Wants=${step_ca_wants}
+${step_ca_requires}
+StartLimitIntervalSec=30
+StartLimitBurst=3
+ConditionFileNotEmpty=/etc/step-ca/config/ca.json
+ConditionFileNotEmpty=/etc/step-ca/password.txt
+
+[Service]
+Type=simple
+Environment=STEPPATH=/etc/step-ca
+Environment=STEPHOME=/etc/step
+WorkingDirectory=/etc/step-ca
+ExecStart=/usr/bin/step-ca config/ca.json --password-file password.txt
+ExecReload=/bin/kill -USR1 \$MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+${step_ca_read_write}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  $STD systemctl daemon-reload
+  systemctl enable -q --now step-ca
+  msg_ok "Created step-ca Service"
+}
+
+# ------------------------------------------------------------------------------
+# Installs or updates step-ca with BadgerDB or MariaDB-backed storage.
+#
+# Variables:
+#   STEP_CA_DB_MODE              - badger|mysql (default: badger)
+#   STEP_CA_NAME                 - CA display name (prompted if unset)
+#   STEP_CA_COUNTRY              - Certificate country (default: DE)
+#   STEP_CA_ORGANIZATIONAL_UNIT  - Certificate OU (default: MyHomeLab)
+#   STEP_CA_PROVISIONER          - Initial JWK provisioner (prompted if unset)
+#   STEP_CA_ACME_PROVISIONER     - ACME provisioner (prompted if unset)
+#   STEP_CA_INSTALL_STEP_BADGER  - auto|yes|no (default: auto, only for Badger)
+#   STEP_CA_DB_NAME              - MariaDB database name for mysql mode
+#   STEP_CA_DB_USER              - MariaDB user for mysql mode
+#   STEP_CA_DB_PASS              - MariaDB password for mysql mode
+# ------------------------------------------------------------------------------
+
+setup_step_ca() {
+  _step_ca_configure_environment
+  ensure_dependencies jq
+
+  local step_ca_db_mode="${STEP_CA_DB_MODE:-badger}"
+  step_ca_db_mode="${step_ca_db_mode,,}"
+  [[ "$step_ca_db_mode" == "mariadb" ]] && step_ca_db_mode="mysql"
+
+  case "$step_ca_db_mode" in
+  badger | badgerv1 | badgerv2) step_ca_db_mode="badger" ;;
+  mysql) ;;
+  *)
+    msg_error "Unsupported STEP_CA_DB_MODE: ${STEP_CA_DB_MODE}"
+    return 65
+    ;;
+  esac
+
+  if [[ -f "${STEPPATH}/config/ca.json" ]]; then
+    local current_db_mode
+    current_db_mode="$(step_ca_db_mode "${STEPPATH}/config/ca.json" || true)"
+    [[ -z "$current_db_mode" ]] && current_db_mode="unknown"
+
+    _step_ca_update_packages
+
+    msg_info "Restarting step-ca"
+    systemctl restart step-ca
+    msg_ok "Restarted step-ca"
+
+    if [[ "$current_db_mode" != "mysql" && "${STEP_CA_INSTALL_STEP_BADGER:-auto}" != "no" ]]; then
+      if check_for_gh_release "step-badger" "lukasz-lobocki/step-badger"; then
+        fetch_and_deploy_gh_release "step-badger" "lukasz-lobocki/step-badger" "prebuild" "latest" "/opt/step-badger" "step-badger_Linux_$(arch_resolve "x86_64" "arm64").tar.gz"
+        ln -sf /opt/step-badger/step-badger /usr/local/bin/step-badger
+        msg_ok "Updated step-badger"
+      fi
+    fi
+    return 0
+  fi
+
+  if [[ -d "${STEPPATH}" && -n "$(find "${STEPPATH}" -mindepth 1 -maxdepth 1 2>/dev/null)" ]]; then
+    msg_error "Incomplete step-ca directory found at ${STEPPATH}; refusing to overwrite it."
+    return 1
+  fi
+
+  _step_ca_install_packages
+
+  local domain_name
+  domain_name="$(hostname -d 2>/dev/null || true)"
+  [[ -z "$domain_name" ]] && domain_name="local"
+
+  local step_ca_fqdn
+  step_ca_fqdn="$(hostname -f 2>/dev/null || hostname)"
+  [[ -z "$step_ca_fqdn" ]] && step_ca_fqdn="step-ca.local"
+
+  local step_ca_ip="${LOCAL_IP:-}"
+  if [[ -z "$step_ca_ip" ]]; then
+    step_ca_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  fi
+
+  local step_ca_name="${STEP_CA_NAME:-$(prompt_input "Enter PKIName" "MyHomePKI" 30)}"
+  local step_ca_country="${STEP_CA_COUNTRY:-$(prompt_input "Enter PKICountry" "DE" 30)}"
+  local step_ca_ou="${STEP_CA_ORGANIZATIONAL_UNIT:-$(prompt_input "Enter PKIOrganizationalUnit" "MyHomeLab" 30)}"
+  local step_ca_provisioner="${STEP_CA_PROVISIONER:-$(prompt_input "Enter PKIProvisioner" "pki@${domain_name}" 30)}"
+  local step_ca_acme_provisioner="${STEP_CA_ACME_PROVISIONER:-$(prompt_input "Enter AcmeProvisioner" "acme@${domain_name}" 30)}"
+  local step_ca_x509_min="${STEP_CA_X509_MIN_DUR:-$(prompt_input "Enter X509MinDur" "48h" 30)}"
+  local step_ca_x509_max="${STEP_CA_X509_MAX_DUR:-$(prompt_input "Enter X509MaxDur" "87600h" 30)}"
+  local step_ca_x509_default="${STEP_CA_X509_DEFAULT_DUR:-$(prompt_input "Enter X509DefaultDur" "168h" 30)}"
+  local step_ca_listener="${STEP_CA_ADDRESS:-:443}"
+  local step_ca_insecure_listener="${STEP_CA_INSECURE_ADDRESS:-:80}"
+
+  if [[ "$step_ca_db_mode" == "mysql" ]]; then
+    setup_mariadb
+    local step_ca_previous_application="${APPLICATION:-}"
+    APPLICATION="step-ca"
+    MARIADB_DB_NAME="${STEP_CA_DB_NAME:-stepca}"
+    MARIADB_DB_USER="${STEP_CA_DB_USER:-stepca}"
+    MARIADB_DB_PASS="${STEP_CA_DB_PASS:-}"
+    MARIADB_DB_CREDS_FILE="${STEP_CA_DB_CREDS_FILE:-}"
+    setup_mariadb_db
+    if [[ -n "$step_ca_previous_application" ]]; then
+      APPLICATION="$step_ca_previous_application"
+    else
+      unset APPLICATION
+    fi
+  fi
+
+  msg_info "Initializing step-ca"
+  mkdir -p "${STEPPATH}" "${STEPHOME}" "${STEPPATH}/encryption"
+
+  local step_ca_pwd_file="${STEPPATH}/encryption/ca.pwd"
+  local step_ca_provisioner_pwd_file="${STEPPATH}/encryption/provisioner.pwd"
+  gpg -q --gen-random --armor 2 32 >"$step_ca_pwd_file"
+  gpg -q --gen-random --armor 2 32 >"$step_ca_provisioner_pwd_file"
+  ln -sf "$step_ca_pwd_file" "${STEPPATH}/password.txt"
+
+  local step_ca_init_dns=("--dns=${step_ca_fqdn}")
+  [[ -n "$step_ca_ip" ]] && step_ca_init_dns+=("--dns=${step_ca_ip}")
+
+  $STD step ca init \
+    --deployment-type="standalone" \
+    --ssh \
+    --name="$step_ca_name" \
+    "${step_ca_init_dns[@]}" \
+    --address="$step_ca_listener" \
+    --provisioner="$step_ca_provisioner" \
+    --password-file="$step_ca_pwd_file" \
+    --provisioner-password-file="$step_ca_provisioner_pwd_file"
+
+  mkdir -p "${STEPPATH}/templates/ca" "${STEPPATH}/templates/x509"
+
+  local step_ca_root_template="${STEPPATH}/templates/ca/root.tpl"
+  local step_ca_intermediate_template="${STEPPATH}/templates/ca/intermediate.tpl"
+  local step_ca_leaf_template="${STEPPATH}/templates/x509/leaf.tpl"
+  local step_ca_leaf_data="${STEPPATH}/templates/x509/leaf_data.tpl"
+
+  cat <<'EOF' >"$step_ca_root_template"
+{
+  "subject": {
+    "country": {{ toJson .Insecure.User.country }},
+    "organization": {{ toJson .Insecure.User.organization }},
+    "organizationalUnit": {{ toJson .Insecure.User.organizationalUnit }},
+    "commonName": {{ toJson .Subject.CommonName }}
+  },
+  "issuer": {{ toJson .Subject }},
+  "keyUsage": ["certSign", "crlSign"],
+  "basicConstraints": {
+    "isCA": true,
+    "maxPathLen": 1
+  },
+  "issuingCertificateURL": [{{ toJson .Insecure.User.issuingCertificateURL }}],
+  "crlDistributionPoints": [{{ toJson .Insecure.User.crlDistributionPoints }}]
+}
+EOF
+
+  cat <<'EOF' >"$step_ca_intermediate_template"
+{
+  "subject": {
+    "country": {{ toJson .Insecure.User.country }},
+    "organization": {{ toJson .Insecure.User.organization }},
+    "organizationalUnit": {{ toJson .Insecure.User.organizationalUnit }},
+    "commonName": {{ toJson .Subject.CommonName }}
+  },
+  "keyUsage": ["certSign", "crlSign"],
+  "basicConstraints": {
+    "isCA": true,
+    "maxPathLen": 0
+  },
+  "issuingCertificateURL": [{{ toJson .Insecure.User.issuingCertificateURL }}],
+  "crlDistributionPoints": [{{ toJson .Insecure.User.crlDistributionPoints }}]
+}
+EOF
+
+  cat <<'EOF' >"$step_ca_leaf_template"
+{
+  "subject": {
+{{- if .Insecure.User.Country }}
+    "country": {{ toJson .Insecure.User.country }},
+{{- else }}
+    "country": {{ toJson .country }},
+{{- end }}
+{{- if .Insecure.User.organization }}
+    "organization": {{ toJson .Insecure.User.organization }},
+{{- else }}
+    "organization": {{ toJson .organization }},
+{{- end }}
+{{- if .Insecure.User.organizationalUnit }}
+    "organizationalUnit": {{ toJson .Insecure.User.organizationalUnit }},
+{{- else }}
+    "organizationalUnit": {{ toJson .organizationalUnit }},
+{{- end }}
+    "commonName": {{ toJson .Subject.CommonName }}
+  },
+  "sans": {{ toJson .SANs }},
+{{- if typeIs "*rsa.PublicKey" .Insecure.CR.PublicKey }}
+  "keyUsage": ["keyEncipherment", "digitalSignature"],
+{{- else }}
+  "keyUsage": ["digitalSignature"],
+{{- end }}
+  "extKeyUsage": ["serverAuth", "clientAuth"],
+{{- if .Insecure.User.issuingCertificateURL }}
+  "issuingCertificateURL": [{{ toJson .Insecure.User.issuingCertificateURL }}],
+{{- else }}
+  "issuingCertificateURL": [{{ toJson .issuingCertificateURL }}],
+{{- end }}
+{{- if .Insecure.User.crlDistributionPoints }}
+  "crlDistributionPoints": [{{ toJson .Insecure.User.crlDistributionPoints }}]
+{{- else }}
+  "crlDistributionPoints": [{{ toJson .crlDistributionPoints }}]
+{{- end }}
+}
+EOF
+
+  cat <<EOF >"$step_ca_leaf_data"
+{
+  "country": "${step_ca_country}",
+  "organization": "${step_ca_name}",
+  "organizationalUnit": "${step_ca_ou}",
+  "issuingCertificateURL": "https://${step_ca_fqdn}${step_ca_listener}/intermediates.pem",
+  "crlDistributionPoints": "https://${step_ca_fqdn}${step_ca_listener}/crl"
+}
+EOF
+
+  $STD step ca provisioner add "$step_ca_acme_provisioner" \
+    --type ACME \
+    --admin-name "$step_ca_acme_provisioner"
+
+  $STD step ca provisioner update "$step_ca_provisioner" \
+    --x509-min-dur="$step_ca_x509_min" \
+    --x509-max-dur="$step_ca_x509_max" \
+    --x509-default-dur="$step_ca_x509_default" \
+    --x509-template="$step_ca_leaf_template" \
+    --x509-template-data="$step_ca_leaf_data" \
+    --allow-renewal-after-expiry
+
+  $STD step ca provisioner update "$step_ca_acme_provisioner" \
+    --x509-min-dur="$step_ca_x509_min" \
+    --x509-max-dur="$step_ca_x509_max" \
+    --x509-default-dur="$step_ca_x509_default" \
+    --x509-template="$step_ca_leaf_template" \
+    --x509-template-data="$step_ca_leaf_data" \
+    --allow-renewal-after-expiry
+
+  local step_ca_config="${STEPPATH}/config/ca.json"
+  jq --arg a "${step_ca_country}" '.country = $a' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  jq --arg a "${step_ca_name}" '.organization = $a' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  jq --arg a "${step_ca_ou}" '.organizationalUnit = $a' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  jq --arg a "${step_ca_name} Online CA" '.commonName = $a' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  jq '.crl.enabled = true' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  jq '.crl.generateOnRevoke = true' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  jq '.crl.cacheDuration = "24h0m0s"' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  jq '.crl.renewPeriod = "16h0m0s"' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  jq --arg a "https://${step_ca_fqdn}${step_ca_listener}/crl" '.crl.idpURL = $a' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  jq --arg a "$step_ca_insecure_listener" '.insecureAddress = $a' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+
+  if [[ "$step_ca_db_mode" == "mysql" ]]; then
+    local step_ca_db_dsn="${MARIADB_DB_USER}:${MARIADB_DB_PASS}@tcp(127.0.0.1:3306)/${MARIADB_DB_NAME}?parseTime=true"
+    jq \
+      --arg db_type "mysql" \
+      --arg data_source "$step_ca_db_dsn" \
+      --arg database "$MARIADB_DB_NAME" \
+      '.db = {"type": $db_type, "dataSource": $data_source, "database": $database}' \
+      "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  else
+    jq '.db.badgerFileLoadingMode = "FileIO"' "$step_ca_config" >"${step_ca_config}_tmp" && mv "${step_ca_config}_tmp" "$step_ca_config"
+  fi
+
+  local step_ca_root_flags=(
+    --force
+    --template="$step_ca_root_template"
+    --not-after="219168h"
+    --password-file="$step_ca_pwd_file"
+    --set country="$step_ca_country"
+    --set organization="$step_ca_name"
+    --set organizationalUnit="$step_ca_ou"
+    --set issuingCertificateURL="https://${step_ca_fqdn}${step_ca_listener}/roots.pem"
+    --set crlDistributionPoints="https://${step_ca_fqdn}${step_ca_listener}/crl"
+  )
+
+  $STD step certificate create "${step_ca_name} Root CA" \
+    "${STEPPATH}/certs/root_ca.crt" \
+    "${STEPPATH}/secrets/root_ca_key" \
+    "${step_ca_root_flags[@]}"
+
+  local step_ca_intermediate_flags=(
+    --force
+    --template="$step_ca_intermediate_template"
+    --ca="${STEPPATH}/certs/root_ca.crt"
+    --ca-key="${STEPPATH}/secrets/root_ca_key"
+    --not-after="175368h"
+    --ca-password-file="$step_ca_pwd_file"
+    --password-file="$step_ca_pwd_file"
+    --bundle
+    --set country="$step_ca_country"
+    --set organization="$step_ca_name"
+    --set organizationalUnit="$step_ca_ou"
+    --set issuingCertificateURL="https://${step_ca_fqdn}${step_ca_listener}/roots.pem"
+    --set crlDistributionPoints="https://${step_ca_fqdn}${step_ca_listener}/crl"
+  )
+
+  $STD step certificate create "${step_ca_name} Intermediate CA" \
+    "${STEPPATH}/certs/intermediate_ca.crt" \
+    "${STEPPATH}/secrets/intermediate_ca_key" \
+    "${step_ca_intermediate_flags[@]}"
+
+  $STD step certificate install --all "${STEPPATH}/certs/root_ca.crt"
+  $STD update-ca-certificates
+
+  chmod -R 700 "${STEPPATH}"
+  msg_ok "Initialized step-ca"
+
+  _step_ca_write_service "$step_ca_db_mode"
+
+  if [[ "$step_ca_db_mode" == "badger" && "${STEP_CA_INSTALL_STEP_BADGER:-auto}" != "no" ]]; then
+    fetch_and_deploy_gh_release "step-badger" "lukasz-lobocki/step-badger" "prebuild" "latest" "/opt/step-badger" "step-badger_Linux_$(arch_resolve "x86_64" "arm64").tar.gz"
+    ln -sf /opt/step-badger/step-badger /usr/local/bin/step-badger
+  fi
+
+  export STEP_CA_DB_MODE="$step_ca_db_mode"
+}
+
+# ------------------------------------------------------------------------------
 # Installs or updates MeiliSearch search engine.
 #
 # Description:

@@ -38,7 +38,19 @@
       "type": "info"
     },
     {
-      "text": "LabCA standalone requires a MySQL-backed step-ca instance to connect to.",
+      "text": "The installer can optionally install a MariaDB-backed step-ca service in the same LXC container.",
+      "type": "info"
+    },
+    {
+      "text": "By default, the installer creates a LabCA-only container with 1 CPU, 512MB RAM, and 2GB disk. If local step-ca is accepted, the CT script uses 2 CPU, 1024MB RAM, and 8GB disk.",
+      "type": "info"
+    },
+    {
+      "text": "When the installer creates the local step-ca database, the generated MariaDB credentials are written to /root/step-ca.creds and displayed during installation.",
+      "type": "info"
+    },
+    {
+      "text": "LabCA standalone requires a MariaDB-backed step-ca instance. BadgerDB-backed step-ca installations are not compatible and are not migrated automatically.",
       "type": "warning"
     }
   ]
