@@ -73,13 +73,34 @@ fetch_and_deploy_gh_release "labca-gui" "hakwerk/labca" "binary"
 msg_info "Configuring LabCA"
 mkdir -p /etc/labca
 if [[ ! -f /etc/labca/config.json ]]; then
-  if ! $STD /usr/bin/labca-gui -config /etc/labca/config.json -port 3000 -init; then
-    cat <<EOF >/etc/labca/config.json
+  LABCA_DB_CONN=""
+  if [[ "$LABCA_STEP_CA_LOCAL" == "yes" && -n "${MARIADB_DB_PASS:-}" ]]; then
+    LABCA_DB_CONN="${MARIADB_DB_USER}:${MARIADB_DB_PASS}@tcp(127.0.0.1:3306)/${MARIADB_DB_NAME}?parseTime=true"
+  fi
+  cat <<EOF >/etc/labca/config.json
 {
-    "standalone": true
+  "backend": "step-ca",
+  "config": {
+    "complete": false
+  },
+  "db": {
+    "conn": "${LABCA_DB_CONN}",
+    "type": "mysql"
+  },
+  "keys": {
+    "auth": "$(openssl rand -base64 32)",
+    "enc": "$(openssl rand -base64 32)"
+  },
+  "server": {
+    "addr": "0.0.0.0",
+    "port": 3000,
+    "session": {
+      "maxage": 3600
+    }
+  },
+  "standalone": true
 }
 EOF
-  fi
 fi
 msg_ok "Configured LabCA"
 
