@@ -38,7 +38,7 @@
       "type": "info"
     },
     {
-      "text": "LabCA standalone requires step-ca to be installed with the MariaDB backend.",
+      "text": "LabCA standalone requires step-ca to be installed with a MySQL/MariaDB backend.",
       "type": "warning"
     }
   ]

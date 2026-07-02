@@ -19,9 +19,9 @@ function configure_labca_resources() {
   if command -v pveversion >/dev/null 2>&1; then
     if [[ -z "${LABCA_INSTALL_STEP_CA:-}" ]]; then
       ensure_whiptail
-      if timeout 60 whiptail --backtitle "Proxmox VE Helper Scripts" --defaultno --title "LABCA STEP-CA" --yesno \
-        "Install a local MariaDB-backed step-ca in this same LXC?\n\nNo creates a smaller LabCA-only container and lets you connect LabCA to an external MySQL/MariaDB-backed step-ca later.\n\nDefault after 60 seconds: No" \
-        14 78; then
+      if timeout --foreground 60 whiptail --backtitle "Proxmox VE Helper Scripts" --defaultno --title "LABCA STEP-CA" --yesno \
+        "Install a local MariaDB-backed step-ca in this same LXC?\n\nNo creates a smaller LabCA-only container. You can connect LabCA to an external MySQL/MariaDB-backed step-ca later.\n\nDefault after 60 seconds: No" \
+        14 62; then
         export LABCA_INSTALL_STEP_CA="yes"
       else
         export LABCA_INSTALL_STEP_CA="no"

@@ -50,7 +50,7 @@
       "type": "info"
     },
     {
-      "text": "LabCA standalone requires a MariaDB-backed step-ca instance. BadgerDB-backed step-ca installations are not compatible and are not migrated automatically.",
+      "text": "LabCA standalone requires a MySQL/MariaDB-backed step-ca instance. BadgerDB-backed step-ca installations are not compatible and are not migrated automatically.",
       "type": "warning"
     }
   ]

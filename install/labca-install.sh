@@ -21,15 +21,15 @@ if [[ -f /etc/step-ca/config/ca.json ]]; then
   case "$LABCA_STEP_CA_DB_MODE" in
   mysql)
     LABCA_STEP_CA_LOCAL="yes"
-    msg_ok "Found LabCA-compatible local step-ca with MariaDB backend"
+    msg_ok "Found LabCA-compatible local step-ca with MySQL/MariaDB backend"
     ;;
   badger | badgerv1 | badgerv2)
     msg_warn "Found local step-ca with ${LABCA_STEP_CA_DB_MODE} backend"
-    msg_warn "LabCA standalone requires a MariaDB-backed step-ca instance. Existing BadgerDB instances are not migrated automatically."
+    msg_warn "LabCA standalone requires a MySQL/MariaDB-backed step-ca instance. Existing BadgerDB instances are not migrated automatically."
     ;;
   *)
     msg_warn "Found local step-ca with unknown database backend"
-    msg_warn "LabCA standalone requires a MariaDB-backed step-ca instance."
+    msg_warn "LabCA standalone requires a MySQL/MariaDB-backed step-ca instance."
     ;;
   esac
 else
@@ -60,7 +60,7 @@ else
     fi
     ;;
   n | no | false | 0)
-    msg_warn "Skipping local step-ca installation. Configure LabCA with an external MariaDB-backed step-ca on first access."
+    msg_warn "Skipping local step-ca installation. Configure LabCA with an external MySQL/MariaDB-backed step-ca on first access."
     ;;
   *)
     msg_warn "Invalid LABCA_INSTALL_STEP_CA value '${LABCA_INSTALL_STEP_CA}', skipping local step-ca installation."
