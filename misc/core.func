@@ -607,7 +607,9 @@ stop_spinner() {
     if kill "$pid" 2>/dev/null; then
       sleep 0.05
       kill -9 "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
+      if jobs -pr 2>/dev/null | grep -qx "$pid"; then
+        wait "$pid" 2>/dev/null || true
+      fi
     fi
     rm -f /tmp/.spinner.pid
   fi
@@ -663,7 +665,6 @@ msg_info() {
   spinner &
   SPINNER_PID=$!
   echo "$SPINNER_PID" >/tmp/.spinner.pid
-  disown "$SPINNER_PID" 2>/dev/null || true
 
   # Pause mode: Stop spinner and wait
   if [[ "${DEV_MODE_PAUSE:-false}" == "true" ]]; then

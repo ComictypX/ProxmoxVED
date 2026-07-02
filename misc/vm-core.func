@@ -417,8 +417,6 @@ start_spinner() {
 
   SPINNER_PID=$!
 
-  # Disown to prevent getting "Terminated" messages
-  disown "$SPINNER_PID" 2>/dev/null || true
 }
 
 stop_spinner() {
@@ -434,8 +432,10 @@ stop_spinner() {
       if kill -0 "$SPINNER_PID" 2>/dev/null; then
         kill -9 "$SPINNER_PID" 2>/dev/null
       fi
-      # Wait for process but ignore errors
-      wait "$SPINNER_PID" 2>/dev/null || true
+      # Wait only if the spinner is still tracked by this shell.
+      if jobs -pr 2>/dev/null | grep -qx "$SPINNER_PID"; then
+        wait "$SPINNER_PID" 2>/dev/null || true
+      fi
     fi
 
     # Clear spinner line
